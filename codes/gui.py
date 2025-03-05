@@ -326,14 +326,12 @@ class TimetableCanvas:
                         # 新課程，結束前一個課程的合併
                         if start_row is not None and i-1 > start_row:
                             # 合併前一個課程的儲存格
-                            merged_content = f"{current_course}\n{unique_times[start_row]}"
-                            if i-1 > start_row:
-                                merged_content += f" ~ {unique_times[i-1]}"
+                            merged_content = f"{current_course}"
                             self.merge_cells(start_row, i-1, day_index, merged_content)
                         elif start_row is not None:
                             # 單一時間槽，無需合併
                             self.set_cell_content(start_row, day_index, 
-                                                 f"{current_course}\n{unique_times[start_row]}")
+                                                 f"{current_course}")
                         
                         # 開始新課程
                         start_row = i
@@ -343,14 +341,12 @@ class TimetableCanvas:
                     # 遇到空白課程，結束合併
                     if i-1 > start_row:
                         # 合併前一個課程的儲存格
-                        merged_content = f"{current_course}\n{unique_times[start_row]}"
-                        if i-1 > start_row:
-                            merged_content += f" ~ {unique_times[i-1]}"
+                        merged_content = f"{current_course}"
                         self.merge_cells(start_row, i-1, day_index, merged_content)
                     else:
                         # 單一時間槽，無需合併
                         self.set_cell_content(start_row, day_index, 
-                                             f"{current_course}\n{unique_times[start_row]}")
+                                             f"{current_course}")
                     
                     start_row = None
                     current_course = None
@@ -360,14 +356,12 @@ class TimetableCanvas:
                 end_row = len(unique_times) - 1
                 if end_row > start_row:
                     # 合併最後的課程儲存格
-                    merged_content = f"{current_course}\n{unique_times[start_row]}"
-                    if end_row > start_row:
-                        merged_content += f" ~ {unique_times[end_row]}"
+                    merged_content = f"{current_course}"
                     self.merge_cells(start_row, end_row, day_index, merged_content)
                 else:
                     # 單一時間槽，無需合併
                     self.set_cell_content(start_row, day_index, 
-                                         f"{current_course}\n{unique_times[start_row]}")
+                                         f"{current_course}")
     
     def display_error(self, message):
         """顯示錯誤訊息"""

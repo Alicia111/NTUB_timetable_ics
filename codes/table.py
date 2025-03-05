@@ -249,3 +249,4 @@ def get_mix_class_table(student_id) :
 if __name__ == "__main__":
     student_id = input("請輸入學號: ")
     get_single_class_table(student_id)
+    get_mix_class_table(student_id)
