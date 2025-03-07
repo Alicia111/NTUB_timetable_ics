@@ -37,6 +37,6 @@ python codes/gui.py
 
 大家有試過點看看那個 **匯出Excel檔** 嗎，如果沒有的話強烈建議要點一次，本來以為會給CSV的（等等，暴雷禁止）。總之，key行事曆的時候蠻痛苦的。  
   
-這邊特別感謝 arthurc0102[https://github.com/arthurc0102] 的Api，沒有你我真不知道這要怎麼做出來，如果有幸能讓您看到的話務必告訴我方式。  
+這邊特別感謝 [arthurc0102](https://github.com/arthurc0102) 的Api，沒有你我真不知道這要怎麼做出來，如果有幸能讓您看到的話務必告訴我方式。  
 
 
