@@ -1,5 +1,4 @@
-### NTUB課表兼行事曆製作器  
----
+# NTUB課表兼行事曆製作器  
 
 ![大概長醬](img/looks.png)  
 
@@ -11,30 +10,30 @@
   
 
 ## Development   
----
+
 要有Python（雖然會看到這個的人應該都有）。  
 
 ```
 pip install requirement.txt  
 ```
 
-# 程式啟動  
+### 程式啟動  
 
 ```
 python codes/gui.py  
 ```
 
-# 我資料呢?  
+### 我資料呢?  
 我知道你很急，但你先別急，資料在 ics_file 資料夾裡面，接下來就是你的工作了，我相信你能加進日曆裡的。   
   
   
 
 ## Contribution     
----
+
 其實我不知道能Contribution什麼，有了，現在只能製作以下一週為起始的ics。  
 
 ## Credits  
----
+
 
 大家有試過點看看那個 **匯出Excel檔** 嗎，如果沒有的話強烈建議要點一次，本來以為會給CSV的（等等，暴雷禁止）。總之，key行事曆的時候蠻痛苦的。  
   
