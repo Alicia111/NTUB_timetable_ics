@@ -1,6 +1,7 @@
 from tkinter import *
 from tkinter import ttk
 from table import get_single_class_table, get_mix_class_table
+import datetime
 
 class TimetableCanvas:
     def __init__(self, master, width=1100, height=600):
@@ -393,7 +394,7 @@ class TimetableCanvas:
 
 # 主視窗設置
 window = Tk()
-window.title("NTUB Timetable ICS (Canvas 版)")
+window.title("NTUB Timetable ICS Generator by Nekolia") 
 window.geometry('1000x700')
 
 # 載入字型
@@ -413,6 +414,9 @@ student_id_label = Label(id_frame, text="請輸入學號:", font=("Iansui", 12))
 student_id_label.pack(side='left')
 student_id_entry = Entry(id_frame, font=("Iansui", 12), width=12)
 student_id_entry.pack(side='left', padx=5)
+
+student_id_error_label=Label(id_frame, text="", font=("Iansui", 10), fg="red",state='disabled')
+student_id_error_label.pack(side='left', padx=25)
 
 # 驗證學號只能輸入數字
 student_id_entry.config(
@@ -441,23 +445,43 @@ button_frame.pack(side='right', padx=10)
 generate_button = Button(button_frame, text="產生課表", font=("Iansui", 12), bg="#F0C9E1", fg="black", padx=10)
 generate_button.pack()
 
+ics_button = Button(button_frame, text="匯出 ICS", font=("Iansui", 12), bg="#F0C9E1", fg="black", padx=10, state='disabled')
+ics_button.pack()
+ics_error_label = Label(button_frame, text="", font=("Iansui", 10), fg="red",state='disabled')
+ics_error_label.pack()
+
 # 創建課表畫布 - 指定適合的大小
 timetable_canvas = TimetableCanvas(window, width=960, height=560)
 
+student_id_check=""
+
 # 產生課表函數
 def generate_timetable():
+    
+    #取得學號
     student_id = student_id_entry.get()
     selected_type = class_type.get()
-    
+
+    #驗證學號
+    global student_id_check
+    student_id_check=student_id
+
+    #清空錯誤訊息
+    student_id_error_label.config(text='',state='disabled')
+    ics_error_label.config(text='',state='disabled')
+
     try:
         if not student_id:
+            error_type = '學號'
             raise Exception('請輸入學號')
         
         elif not student_id.isdigit():
-            raise Exception('學號必須是數字')
-        
+            error_type='學號'
+            raise Exception('不是你咋做到的')
+            
         result = get_single_class_table(student_id)
         if result == '無此人':
+            error_type='沒人'
             raise Exception('此學號不存在或沒選課')
             
         if result:
@@ -465,15 +489,83 @@ def generate_timetable():
                 timetable_canvas.display_single_timetable(result)
             else:  # 混合課表
                 timetable_canvas.display_mix_timetable(result)
-        else:
-            timetable_canvas.display_error('無課表資料')
+                ics_button.config(state='normal')
+
             
     except Exception as e:
-        timetable_canvas.display_error(f'錯誤: {str(e)}')
+        if error_type == '學號':
+            student_id_error_label.config(text=str(e),state='normal')
+            ics_button.config(state='disabled')
+
+        else:
+            timetable_canvas.display_error(f'錯誤: {str(e)}')
+            ics_button.config(state='disabled')
+
+def generate_ics():
+    student_id = student_id_entry.get()
+
+    ics_error_label.config(text='',state='disabled')
+    
+    global student_id_check
+    
+
+    try:
+        if not student_id:
+            raise Exception('偷刪學號是會被發現的喔')
+        
+        elif not student_id.isdigit():
+            raise Exception('通報阿茲卡班，有魔法師逃出來了')
+        
+        elif student_id != student_id_check:
+            raise Exception('你以為我不知道你換學號了嗎')
+
+        result = get_mix_class_table(student_id)
+        if result == '無此人':
+            raise Exception('告訴下Nekolia你怎麼找到漏洞的')
+        
+        else:
+            today = datetime.date.today()
+            weekday = today.weekday()
+
+            with open(f"ics_file/{student_id}_timetable.ics", "w+", encoding="utf-8") as f:
+                f.write("BEGIN:VCALENDAR\n")
+                f.write("VERSION:2.0\n")
+                f.write("PRODID:-//NTUB Timetable Generator//EN\n")  # Updated PRODID
+                f.write("CALSCALE:GREGORIAN\n")
+                f.write("METHOD:PUBLISH\n")
+                for i in range(0, len(result["class"])):
+                    class_name = result["class"][i]
+                    class_day = result["day"][i] - 1
+                    class_place = result["place"][i]
+                    class_start = result["start"][i]
+                    class_end = result["end"][i]
+
+                    go_to_class_date = today + datetime.timedelta(class_day - weekday + 7)
+
+                    uid = f"{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00Z-{class_name}@ntub.tw"  # UID generation
+                    f.write("BEGIN:VEVENT\n")
+                    f.write(f"SUMMARY:{class_name}\n")
+                    f.write(f"DTSTART;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00\n")
+                    f.write(f"DTEND;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_end.replace(':','')}00\n")
+                    f.write(f"LOCATION:{class_place}\n")
+                    f.write(f"UID:{uid}\n")  # Added UID
+                    f.write(f"DTSTAMP:{today.strftime('%Y%m%d')}T000000Z\n")  # Added DTSTAMP
+                    # Optional: Add description
+                    # f.write(f"DESCRIPTION:{class_name} 課程\n")
+                    f.write("END:VEVENT\n")
+
+                f.write("END:VCALENDAR\n")
+                    
+                print(go_to_class_date)
+                
+
+    except Exception as e:
+        ics_error_label.config(text=str(e),state='normal')
+
 
 # 設定按鈕命令
 generate_button.config(command=generate_timetable)
-
+ics_button.config(command=generate_ics)
 # 狀態欄
 status_frame = Frame(window, height=20)
 status_frame.pack(fill='x', side='bottom')

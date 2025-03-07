@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional
 import threading
 from api import ClassTableURL
 # 設定課表查詢API的URL
-CLASS_TABLE_URL = ClassTableURL  # 請替換為實際URL
+CLASS_TABLE_URL = ClassTableURL  
 CLASS_MAP_KEY = ["name", "teacher", "room"]
 
 def get_personal_class_table(student_id: str, today: int) -> Optional[BeautifulSoup]:
@@ -118,32 +118,12 @@ def personal_class_table(student_id: str) -> Tuple[List[List[Optional[Dict[str, 
 
 # 使用示例
 
-def get_single_class_table(student_id) : 
-    class_table, class_time, errors = personal_class_table(student_id)
 
-    if errors:
-        print(f"發生 {len(errors)} 個錯誤:")
-        for e in errors:
-            print(f"- {e}")
-
-    else:
-        print("\n課表:")
-
-        for day_index, day_classes in enumerate(class_table):
-            # Check if there are any classes on this day
-            has_classes = any(class_info is not None for class_info in day_classes)
-
-            if has_classes:
-                print(f"\n【星期{day_index + 1}】")
-                #課表顯示
-                for i, class_info in enumerate(day_classes):
-                    if class_info:
-                        i=int(i)
 def get_single_class_table(student_id):
     class_table, class_time, errors = personal_class_table(student_id)
 # Check if all elements in class_table are None
     if all(all(x is None for x in day) for day in class_table):
-        print("無此人")
+        #print("無此人")
         return "無此人"
 
     if errors:
@@ -180,14 +160,21 @@ def get_single_class_table(student_id):
                     class_str = f"{class_info['name']} - {class_info['teacher']} ({class_info['room']})"
                     result[i][day_map[day_index]] = class_str
  
-    print(result)
+    #print(result)
     return result
 def get_mix_class_table(student_id) :   
-  
+    
+
+    result={"class":[],"place":[],"day":[],"start":[],"end":[]}
+    
     class_table, class_time, errors = personal_class_table(student_id)
 
+    if all(all(x is None for x in day) for day in class_table):
+        #print("無此人")
+        return "無此人"
+
     if errors:
-        print(f"發生 {len(errors)} 個錯誤:")
+        #print(f"發生 {len(errors)} 個錯誤:")
         for e in errors:
             print(f"- {e}")
 
@@ -198,8 +185,10 @@ def get_mix_class_table(student_id) :
             has_classes = any(class_info is not None for class_info in day_classes)
 
             if has_classes:
-                print(f"\n【星期{day_index + 1}】")
-        # 用於存儲合併後的課程
+                
+                #print(f"\n【星期{day_index + 1}】")
+                
+                # 用於存儲合併後的課程
                 merged_classes = {}
 
                 # 遍歷當天所有課程
@@ -235,7 +224,16 @@ def get_mix_class_table(student_id) :
                     else:
                         period_str = f"第{periods[0]}節:"
 
-                    print(f"{period_str} {class_info['name']} - {class_info['teacher']} ({class_info['room']}) / ({class_info['periods'][0]['start']} - {class_info['periods'][-1]['end']})")
+                    #print(f"{period_str} {class_info['name']} - {class_info['teacher']} ({class_info['room']}) / ({class_info['periods'][0]['start']} - {class_info['periods'][-1]['end']})")
+                    
+                    result["class"].append(class_info['name'])
+                    result["place"].append(class_info['room'])
+                    result["day"].append(day_index+1)
+                    result["start"].append(class_info['periods'][0]['start'])
+                    result["end"].append(class_info['periods'][-1]['end'])
+            
+        return result
+
                     # periods = class_info['periods']
                     # period_str = f"第{periods[0]['period']}"
                     # if len(periods) > 1:
@@ -248,5 +246,5 @@ def get_mix_class_table(student_id) :
 
 if __name__ == "__main__":
     student_id = input("請輸入學號: ")
-    get_single_class_table(student_id)
-    get_mix_class_table(student_id)
+    #get_single_class_table(student_id)
+    print(get_mix_class_table(student_id))
