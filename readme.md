@@ -4,7 +4,7 @@
 
 嗨嗨，這裡因為Nekolia跑去耍廢而出來說明的Alicia，應該是多琳娜事務所的第一個作品。  
 
-本專案，簡而言之就是一個自動生成ics檔案(iCalendar, [RFC 5545](https://datatracker.ietf.org/doc/html/rfc5545)  ) 的軟體，應該只要是智慧型產品都能支援。  
+本專案，簡而言之就是一個把你的課表變成ics檔案(iCalendar, [RFC 5545](https://datatracker.ietf.org/doc/html/rfc5545)  ) 的軟體，應該只要是智慧型產品都能支援。  
 
 技術方面簡單來說就是沒有技術，Python加上Ai assistance的效率好可怕。  
   
@@ -40,3 +40,8 @@ python codes/gui.py
 這邊特別感謝 [arthurc0102](https://github.com/arthurc0102) 的Api，沒有你我真不知道這要怎麼做出來，如果有幸能讓您看到的話務必告訴我方式。  
 
 
+## Others
+
+> [!CAUTION]
+> 若因為此程式而造成任何侵犯隱私若其他造成毀滅性問題的話不要來找我，不過可以在issue裡面討論
+> 對，這是免責聲明。
