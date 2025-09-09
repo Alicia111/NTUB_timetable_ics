@@ -1,7 +1,9 @@
+
 from tkinter import *
-from tkinter import ttk
+from tkinter import ttk, filedialog # --- 1. 匯入 filedialog ---
 from table import get_single_class_table, get_mix_class_table
 import datetime
+import os
 
 class TimetableCanvas:
     def __init__(self, master, width=1100, height=600):
@@ -398,9 +400,12 @@ window.title("NTUB Timetable ICS Generator by Nekolia")
 window.geometry('1000x700')
 
 # 載入字型
-font_name = "Iansui"
-window.option_add("*Font", font_name)
-window.tk.call("font", "create", font_name, "-family", font_name)
+try:
+    font_name = "Iansui"
+    window.option_add("*Font", font_name)
+    window.tk.call("font", "create", font_name, "-family", font_name)
+except TclError:
+    print("注意: 'Iansui' 字型未安裝，將使用預設字型。")
 
 # 創建框架來容納控制項
 control_frame = Frame(window)
@@ -485,15 +490,15 @@ def generate_timetable():
             raise Exception('此學號不存在或沒選課')
             
         if result:
+            ics_button.config(state='disabled') # 預先禁用
             if selected_type == '單一課表':
                 timetable_canvas.display_single_timetable(result)
             else:  # 混合課表
                 timetable_canvas.display_mix_timetable(result)
                 ics_button.config(state='normal')
 
-            
     except Exception as e:
-        if error_type == '學號':
+        if 'error_type' in locals() and error_type == '學號':
             student_id_error_label.config(text=str(e),state='normal')
             ics_button.config(state='disabled')
 
@@ -508,7 +513,6 @@ def generate_ics():
     
     global student_id_check
     
-
     try:
         if not student_id:
             raise Exception('偷刪學號是會被發現的喔')
@@ -523,45 +527,65 @@ def generate_ics():
         if result == '無此人':
             raise Exception('告訴下Nekolia你怎麼找到漏洞的')
         
-        else:
-            today = datetime.date.today()
-            weekday = today.weekday()
+        # --- 2. 以下是主要修改部分 ---
 
-            with open(f"ics_file/{student_id}_timetable.ics", "w+", encoding="utf-8") as f:
-                f.write("BEGIN:VCALENDAR\n")
-                f.write("VERSION:2.0\n")
-                f.write("PRODID:-//NTUB Timetable Generator//EN\n")  # Updated PRODID
-                f.write("CALSCALE:GREGORIAN\n")
-                f.write("METHOD:PUBLISH\n")
-                for i in range(0, len(result["class"])):
-                    class_name = result["class"][i]
-                    class_day = result["day"][i] - 1
-                    class_place = result["place"][i]
-                    class_start = result["start"][i]
-                    class_end = result["end"][i]
+        # 取得使用者「下載」資料夾的路徑
+        downloads_path = os.path.join(os.path.expanduser('~'), 'downloads')
 
-                    go_to_class_date = today + datetime.timedelta(class_day - weekday + 7)
+        # 彈出「另存新檔」視窗
+        file_path = filedialog.asksaveasfilename(
+            initialdir=downloads_path,  # 預設開啟「下載」資料夾
+            initialfile=f"{student_id}_timetable.ics", # 預設檔名
+            defaultextension=".ics",
+            filetypes=[
+                ("iCalendar files", "*.ics"),
+                ("All files", "*.*")
+            ]
+        )
 
-                    uid = f"{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00Z-{class_name}@ntub.tw"  # UID generation
-                    f.write("BEGIN:VEVENT\n")
-                    f.write(f"SUMMARY:{class_name}\n")
-                    f.write(f"DTSTART;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00\n")
-                    f.write(f"DTEND;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_end.replace(':','')}00\n")
-                    f.write(f"LOCATION:{class_place}\n")
-                    f.write(f"UID:{uid}\n")  # Added UID
-                    f.write(f"DTSTAMP:{today.strftime('%Y%m%d')}T000000Z\n")  # Added DTSTAMP
-                    # Optional: Add description
-                    # f.write(f"DESCRIPTION:{class_name} 課程\n")
-                    f.write("END:VEVENT\n")
+        # 如果使用者點擊取消，file_path 會是空字串，則不執行後續動作
+        if not file_path:
+            return
 
-                f.write("END:VCALENDAR\n")
-                    
-                print(go_to_class_date)
-                
+        # --- 修改結束，後續邏輯不變 ---
+        
+        today = datetime.date.today()
+        weekday = today.weekday()
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("BEGIN:VCALENDAR\n")
+            f.write("VERSION:2.0\n")
+            f.write("PRODID:-//NTUB Timetable Generator//EN\n")
+            f.write("CALSCALE:GREGORIAN\n")
+            f.write("METHOD:PUBLISH\n")
+            for i in range(len(result["class"])):
+                class_name = result["class"][i]
+                class_day = result["day"][i] - 1
+                class_place = result["place"][i]
+                class_start = result["start"][i]
+                class_end = result["end"][i]
+
+                days_ahead = (class_day - weekday + 7) % 7
+                go_to_class_date = today + datetime.timedelta(days=days_ahead)
+
+                uid = f"{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00Z-{class_name}@ntub.tw"
+                f.write("BEGIN:VEVENT\n")
+                f.write(f"SUMMARY:{class_name}\n")
+                f.write(f"DTSTART;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00\n")
+                f.write(f"DTEND;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_end.replace(':','')}00\n")
+                f.write(f"LOCATION:{class_place}\n")
+                f.write(f"UID:{uid}\n")
+                f.write(f"DTSTAMP:{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}\n")
+                f.write("RRULE:FREQ=WEEKLY\n")
+                f.write("END:VEVENT\n")
+
+            f.write("END:VCALENDAR\n")
+        
+        # 提示使用者檔案已儲存
+        ics_error_label.config(text=f"成功匯出！", fg="green", state='normal')
 
     except Exception as e:
-        ics_error_label.config(text=str(e),state='normal')
-
+        ics_error_label.config(text=str(e),state='normal', fg="red")
 
 # 設定按鈕命令
 generate_button.config(command=generate_timetable)

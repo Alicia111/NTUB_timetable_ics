@@ -11,17 +11,22 @@ CLASS_MAP_KEY = ["name", "teacher", "room"]
 def get_personal_class_table(student_id: str, today: int) -> Optional[BeautifulSoup]:
     """發送請求獲取課表並返回BeautifulSoup物件"""
     client = requests.Session()
+    
     data = {"StdNo": student_id, "today": str(today)}
     
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "X-Requested-With": "com.hanglong.NTUBStdApp"
     }
-    
+
     try:
         response = client.post(CLASS_TABLE_URL, data=data, headers=headers)
+        print(response.status_code)
+        print(response.headers)
+        print(response.url)
+        print(data)
         response.raise_for_status()  # 當HTTP請求發生錯誤時拋出異常
-        
+        print(response.text)
         # 解析HTML回應
         doc = BeautifulSoup(response.text, 'html.parser')
         return doc
@@ -246,5 +251,5 @@ def get_mix_class_table(student_id) :
 
 if __name__ == "__main__":
     student_id = input("請輸入學號: ")
-    #get_single_class_table(student_id)
-    print(get_mix_class_table(student_id))
+    get_single_class_table(student_id)
+    #print(get_mix_class_table(student_id))
