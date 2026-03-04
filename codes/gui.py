@@ -1,9 +1,20 @@
 
 from tkinter import *
 from tkinter import ttk, filedialog # --- 1. 匯入 filedialog ---
+from tkcalendar import DateEntry
 from table import get_single_class_table, get_mix_class_table
 import datetime
 import os
+
+# ── Material Design 配色 ──
+MD_PRIMARY     = "#6200EE"   # Deep Purple
+MD_PRIMARY_D   = "#3700B3"   # Dark variant (hover)
+MD_ON_PRIMARY  = "#FFFFFF"
+MD_SURFACE     = "#FAFAFA"
+MD_ON_SURFACE  = "#212121"
+MD_DISABLED_BG = "#E0E0E0"
+MD_DISABLED_FG = "#9E9E9E"
+MD_ACCENT      = "#03DAC6"
 
 class TimetableCanvas:
     def __init__(self, master, width=1100, height=600):
@@ -437,22 +448,103 @@ class_type_label = Label(type_frame, text="課表類型:", font=("Iansui", 12))
 class_type_label.pack(side='left')
 class_type = StringVar(value="單一課表")  # 預設值
 
-single_class_radio = Radiobutton(type_frame, text="課表", variable=class_type, value="單一課表", font=("Iansui", 12))
+def on_class_type_change():
+    """Radio 切換時控制日期選擇區的顯示/隱藏"""
+    if class_type.get() == '混合課表':
+        date_frame.pack(side='right', padx=10, before=button_frame)
+    else:
+        date_frame.pack_forget()
+
+single_class_radio = Radiobutton(type_frame, text="課表", variable=class_type, value="單一課表",
+                                 font=("Iansui", 12), command=on_class_type_change)
 single_class_radio.pack(side='left', padx=5)
 
-mix_class_radio = Radiobutton(type_frame, text="行事曆用課表", variable=class_type, value="混合課表", font=("Iansui", 12))
+mix_class_radio = Radiobutton(type_frame, text="行事曆用課表", variable=class_type, value="混合課表",
+                               font=("Iansui", 12), command=on_class_type_change)
 mix_class_radio.pack(side='left', padx=5)
 
-# 產生課表按鈕 - 放在右側
-button_frame = Frame(control_frame)
+# ── 結束日期設定（Material Design） ──
+date_frame = Frame(control_frame, bg=MD_SURFACE, bd=0, highlightthickness=0)
+# 預設隱藏，選「行事曆用課表」才顯示
+
+# 預設日期 = 今天 + 18 週
+default_end_date = datetime.date.today() + datetime.timedelta(weeks=18)
+
+repeat_label = Label(date_frame, text="重複至:", font=("Iansui", 12),
+                     bg=MD_SURFACE, fg=MD_ON_SURFACE)
+repeat_label.pack(side='left')
+
+end_date_entry = DateEntry(
+    date_frame,
+    width=12,
+    year=default_end_date.year,
+    month=default_end_date.month,
+    day=default_end_date.day,
+    font=("Iansui", 11),
+    background=MD_PRIMARY,
+    foreground=MD_ON_PRIMARY,
+    headersbackground=MD_PRIMARY,
+    headersforeground=MD_ON_PRIMARY,
+    selectbackground=MD_PRIMARY_D,
+    selectforeground=MD_ON_PRIMARY,
+    normalbackground=MD_SURFACE,
+    normalforeground=MD_ON_SURFACE,
+    weekendbackground=MD_SURFACE,
+    weekendforeground=MD_ON_SURFACE,
+    bordercolor=MD_PRIMARY,
+    date_pattern='yyyy/mm/dd',
+    locale='zh_TW',
+)
+end_date_entry.pack(side='left', padx=5)
+
+# 無限重複 Checkbox
+infinite_var = BooleanVar(value=False)
+
+def toggle_date_entry():
+    if infinite_var.get():
+        end_date_entry.config(state='disabled')
+    else:
+        end_date_entry.config(state='normal')
+
+infinite_check = Checkbutton(
+    date_frame, text="無限重複", variable=infinite_var,
+    font=("Iansui", 10), bg=MD_SURFACE, fg=MD_ON_SURFACE,
+    activebackground=MD_SURFACE, selectcolor=MD_SURFACE,
+    command=toggle_date_entry
+)
+infinite_check.pack(side='left', padx=5)
+
+# ── 按鈕區（Material Design） ──
+button_frame = Frame(control_frame, bg=MD_SURFACE)
 button_frame.pack(side='right', padx=10)
 
-generate_button = Button(button_frame, text="產生課表", font=("Iansui", 12), bg="#F0C9E1", fg="black", padx=10)
-generate_button.pack()
+def md_button_enter(e):
+    e.widget.config(bg=MD_PRIMARY_D)
 
-ics_button = Button(button_frame, text="匯出 ICS", font=("Iansui", 12), bg="#F0C9E1", fg="black", padx=10, state='disabled')
-ics_button.pack()
-ics_error_label = Label(button_frame, text="", font=("Iansui", 10), fg="red",state='disabled')
+def md_button_leave(e):
+    if e.widget.cget('state') != 'disabled':
+        e.widget.config(bg=MD_PRIMARY)
+
+generate_button = Button(
+    button_frame, text="產生課表", font=("Iansui", 12),
+    bg=MD_PRIMARY, fg=MD_ON_PRIMARY, activebackground=MD_PRIMARY_D,
+    activeforeground=MD_ON_PRIMARY, relief='flat', padx=14, pady=4,
+    cursor='hand2', bd=0
+)
+generate_button.pack(pady=2)
+generate_button.bind('<Enter>', md_button_enter)
+generate_button.bind('<Leave>', md_button_leave)
+
+ics_button = Button(
+    button_frame, text="匯出 ICS", font=("Iansui", 12),
+    bg=MD_DISABLED_BG, fg=MD_DISABLED_FG, relief='flat',
+    padx=14, pady=4, bd=0, state='disabled'
+)
+ics_button.pack(pady=2)
+ics_button.bind('<Enter>', md_button_enter)
+ics_button.bind('<Leave>', md_button_leave)
+
+ics_error_label = Label(button_frame, text="", font=("Iansui", 10), fg="red", state='disabled')
 ics_error_label.pack()
 
 # 創建課表畫布 - 指定適合的大小
@@ -490,21 +582,21 @@ def generate_timetable():
             raise Exception('此學號不存在或沒選課')
             
         if result:
-            ics_button.config(state='disabled') # 預先禁用
+            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
             if selected_type == '單一課表':
                 timetable_canvas.display_single_timetable(result)
             else:  # 混合課表
                 timetable_canvas.display_mix_timetable(result)
-                ics_button.config(state='normal')
+                ics_button.config(state='normal', bg=MD_PRIMARY, fg=MD_ON_PRIMARY)
 
     except Exception as e:
         if 'error_type' in locals() and error_type == '學號':
             student_id_error_label.config(text=str(e),state='normal')
-            ics_button.config(state='disabled')
+            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
 
         else:
             timetable_canvas.display_error(f'錯誤: {str(e)}')
-            ics_button.config(state='disabled')
+            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
 
 def generate_ics():
     student_id = student_id_entry.get()
@@ -576,7 +668,11 @@ def generate_ics():
                 f.write(f"LOCATION:{class_place}\n")
                 f.write(f"UID:{uid}\n")
                 f.write(f"DTSTAMP:{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}\n")
-                f.write("RRULE:FREQ=WEEKLY\n")
+                if infinite_var.get():
+                    f.write("RRULE:FREQ=WEEKLY\n")
+                else:
+                    until_date = end_date_entry.get_date()
+                    f.write(f"RRULE:FREQ=WEEKLY;UNTIL={until_date.strftime('%Y%m%d')}T235959Z\n")
                 f.write("END:VEVENT\n")
 
             f.write("END:VCALENDAR\n")

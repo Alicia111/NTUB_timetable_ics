@@ -1,2 +1,3 @@
 beautifulsoup4==4.13.3
 Requests==2.32.3
+tkcalendar==1.6.1
