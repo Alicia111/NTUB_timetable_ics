@@ -14,7 +14,7 @@
 要有Python（雖然會看到這個的人應該都有）。  
 
 ```
-pip install requirement.txt  
+pip install -r requirements.txt  
 ```
 
 ### 程式啟動  
@@ -22,6 +22,22 @@ pip install requirement.txt
 ```
 python codes/gui.py  
 ```
+
+### 外觀 / 主題  
+
+介面走 **Material Design 3**，配色是 **Monet 動態取色**：程式啟動時會去讀你的桌面桌布，抓出主色當種子色，再展開成整套 M3 tonal palette。支援 GNOME、Raspberry Pi OS (pcmanfm / wayfire)、XFCE、KDE；抓不到就安靜退回預設的紫色，不會影響使用。
+
+- 右上角 `☾` / `☀` 切換淺色與深色。  
+- 右上角 `◐` 打開主題設定，可以挑內建色票、重新從桌布擷取，或自己用調色盤選一個。  
+- 選擇會記在 `~/.config/ntub_timetable_ics/settings.json`，下次開啟沿用。  
+
+配色演算法是自己寫的（`codes/theme.py`），沒有額外依賴，樹莓派上跑起來一樣輕。想看色階跟對比度檢查的話：
+
+```
+python codes/theme.py
+```
+
+字型的部分，Tk 沒辦法直接載入專案裡的 `font/Iansui-Regular.ttf`，要把它裝進系統字型才會生效；沒裝的話會自動退到 Noto Sans CJK TC 等中文字型。
 
 ### 我資料呢?  
 我知道你很急，但你先別急，資料在 ics_file 資料夾裡面，接下來就是你的工作了，我相信你能加進日曆裡的。   

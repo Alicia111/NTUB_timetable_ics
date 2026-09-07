@@ -1,695 +1,577 @@
+"""NTUB 課表 / 行事曆 ICS 產生器。
 
-from tkinter import *
-from tkinter import ttk, filedialog # --- 1. 匯入 filedialog ---
-from tkcalendar import DateEntry
-from table import get_single_class_table, get_mix_class_table
+介面走 Material Design 3，配色由 theme.py 從桌布擷取的種子色即時生成（Monet），
+套用的細節都在 md3.py，這支檔案只管版面與流程。
+"""
+
 import datetime
 import os
+import tkinter as tk
+import zlib
+from tkinter import colorchooser, filedialog, ttk
 
-# ── Material Design 配色 ──
-MD_PRIMARY     = "#6200EE"   # Deep Purple
-MD_PRIMARY_D   = "#3700B3"   # Dark variant (hover)
-MD_ON_PRIMARY  = "#FFFFFF"
-MD_SURFACE     = "#FAFAFA"
-MD_ON_SURFACE  = "#212121"
-MD_DISABLED_BG = "#E0E0E0"
-MD_DISABLED_FG = "#9E9E9E"
-MD_ACCENT      = "#03DAC6"
+from tkcalendar import DateEntry
+
+import md3
+import theme
+from table import get_mix_class_table, get_single_class_table
+
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+DEFAULT_WEEKS = 18          # 一學期大約的長度，當作結束日期的預設值
+CHIP_PADDING = 4            # 課程卡片與格線之間留的空隙
+CHIP_RADIUS = 12
+
 
 class TimetableCanvas:
-    def __init__(self, master, width=1100, height=600):
-        self.master = master
+    """畫課表的 Canvas。
+
+    課程用圓角卡片呈現（M3 沒有「表格」這種元件，最接近的是一堆 container），
+    底色在三組 container role 之間輪替，讓相鄰課程分得開。
+    """
+
+    def __init__(self, master, scheme, width=960, height=520):
+        self.scheme = scheme
         self.width = width
         self.height = height
-        
-        # 創建框架和畫布
-        self.frame = Frame(master)
-        self.frame.pack(pady=20, fill='both', expand=True)
-        
-        # 添加捲軸
-        self.v_scrollbar = Scrollbar(self.frame, orient="vertical")
-        self.v_scrollbar.pack(side='right', fill='y')
-        
-        self.h_scrollbar = Scrollbar(self.frame, orient="horizontal")
-        self.h_scrollbar.pack(side='bottom', fill='x')
-        
-        # 創建畫布
-        self.canvas = Canvas(
-            self.frame, 
-            width=width, 
-            height=height, 
-            bg="white",
+
+        self.frame = ttk.Frame(master, style="M3.TFrame")
+        self.frame.pack(padx=16, pady=(0, 8), fill="both", expand=True)
+
+        self.v_scrollbar = ttk.Scrollbar(self.frame, orient="vertical",
+                                         style="M3.Vertical.TScrollbar")
+        self.v_scrollbar.pack(side="right", fill="y")
+        self.h_scrollbar = ttk.Scrollbar(self.frame, orient="horizontal",
+                                         style="M3.Horizontal.TScrollbar")
+        self.h_scrollbar.pack(side="bottom", fill="x")
+
+        self.canvas = tk.Canvas(
+            self.frame, width=width, height=height,
+            bg=scheme.surface, highlightthickness=0, bd=0,
             yscrollcommand=self.v_scrollbar.set,
-            xscrollcommand=self.h_scrollbar.set
+            xscrollcommand=self.h_scrollbar.set,
         )
-        self.canvas.pack(fill='both', expand=True)
-        
-        # 配置捲軸
+        self.canvas.pack(fill="both", expand=True)
         self.v_scrollbar.config(command=self.canvas.yview)
         self.h_scrollbar.config(command=self.canvas.xview)
-        
-        # 儲存格資料
-        self.cells = {}
-        self.merged_cells = {}
-        
-        # 自適應設置
-        self.set_adaptive_sizes()
-        
-    def set_adaptive_sizes(self):
-        """根據畫布大小設置自適應的儲存格尺寸"""
-        # 設置時間列寬度為畫布寬度的12%
+
+        # 記住最後畫過什麼，換主題時才能原樣重畫
+        self._last_render = None
+        self._set_adaptive_sizes()
+
+    # ── 尺寸 ──────────────────────────────────────────────
+    def _set_adaptive_sizes(self):
+        """依畫布大小推算欄寬列高。"""
         self.left_margin = int(self.width * 0.12)
-        
-        # 設置表頭高度為畫布高度的8%
-        self.top_margin = int(self.height * 0.08)
-        
-        # 假設最多有5個工作日和8個時間段
-        max_days = 6  # 包含時間列
-        max_times = 8
-        
-        # 計算適合的儲存格尺寸
-        self.cell_width = int((self.width - self.left_margin) / (max_days - 1))
-        self.cell_height = int((self.height - self.top_margin) / max_times)
-        
-        # 目前的資料
+        self.top_margin = int(self.height * 0.09)
+        self.cell_width = int((self.width - self.left_margin) / len(WEEKDAYS))
+        self.cell_height = int((self.height - self.top_margin) / 8)
         self.days = []
         self.time_slots = []
-        
+
+    # ── 主題 ──────────────────────────────────────────────
+    def retheme(self, scheme):
+        """換色後照原本的內容重畫一次。"""
+        self.scheme = scheme
+        self.canvas.config(bg=scheme.surface)
+        if self._last_render is None:
+            return
+        mode, payload = self._last_render
+        if mode == "single":
+            self.display_single_timetable(payload)
+        elif mode == "mix":
+            self.display_mix_timetable(payload)
+        else:
+            self.display_error(payload)
+
+    def _chip_colors(self, course_name):
+        """同一門課永遠拿到同一個顏色；用 crc32 而不是 hash()，
+        因為 str 的 hash 每次執行都會變，課表顏色會跳來跳去。"""
+        roles = theme.course_container_roles(self.scheme)
+        return roles[zlib.crc32(course_name.encode("utf-8")) % len(roles)]
+
+    # ── 繪製基本結構 ───────────────────────────────────────
     def clear_canvas(self):
-        """清除畫布上的所有內容"""
         self.canvas.delete("all")
-        self.cells = {}
-        self.merged_cells = {}
-    
-    def set_days(self, days):
-        """設置星期幾的標題"""
-        self.days = days
-        self.draw_headers()
-    
-    def draw_headers(self):
-        """繪製表頭"""
-        # 設置畫布捲動區域
-        total_width = self.left_margin + (len(self.days) - 1) * self.cell_width
-        total_height = self.cell_height * len(self.time_slots) + self.top_margin
+
+    def _total_size(self):
+        return (self.left_margin + (len(self.days) - 1) * self.cell_width,
+                self.top_margin + len(self.time_slots) * self.cell_height)
+
+    def _draw_frame(self):
+        """畫表頭與格線。"""
+        total_width, total_height = self._total_size()
         self.canvas.config(scrollregion=(0, 0, total_width, total_height))
-        
-        # 繪製表頭背景
+
+        # 表頭列
         self.canvas.create_rectangle(
-            0, 0, total_width, self.top_margin, 
-            fill="#e0e0e0", outline="black"
+            0, 0, total_width, self.top_margin,
+            fill=self.scheme.surface_container_high, outline="",
         )
-        
-        # 繪製時間列標題 (調整字體大小)
-        header_font_size = max(10, min(12, int(self.top_margin / 3)))
+        header_font = (md3.type_scale("label_large")[0],
+                       max(11, min(14, int(self.top_margin / 3))), "bold")
         self.canvas.create_text(
             self.left_margin / 2, self.top_margin / 2,
-            text=self.days[0], font=("Iansui", header_font_size, "bold")
+            text=self.days[0], font=header_font, fill=self.scheme.on_surface,
         )
-        
-        # 繪製星期幾標題
-        for i, day in enumerate(self.days[1:], 1):
-            x = self.left_margin + (i - 1) * self.cell_width + self.cell_width / 2
+        for index, day in enumerate(self.days[1:], 1):
+            x = self.left_margin + (index - 1) * self.cell_width + self.cell_width / 2
+            self.canvas.create_text(x, self.top_margin / 2, text=day,
+                                    font=header_font, fill=self.scheme.on_surface)
+
+        # 格線：M3 的分隔線很輕，用 outline_variant 就好，不要黑線
+        for index in range(len(self.days)):
+            x = self.left_margin + index * self.cell_width
+            self.canvas.create_line(x, self.top_margin, x, total_height,
+                                    fill=self.scheme.outline_variant, width=1)
+        for index in range(len(self.time_slots) + 1):
+            y = self.top_margin + index * self.cell_height
+            self.canvas.create_line(0, y, total_width, y,
+                                    fill=self.scheme.outline_variant, width=1)
+
+    def _draw_time_column(self):
+        time_font = (md3.type_scale("body_small")[0],
+                     max(9, min(11, int(self.left_margin / 10))))
+        for index, time_slot in enumerate(self.time_slots):
+            y = self.top_margin + index * self.cell_height + self.cell_height / 2
             self.canvas.create_text(
-                x, self.top_margin / 2,
-                text=day, font=("Iansui", header_font_size, "bold")
+                self.left_margin / 2, y, text=time_slot, font=time_font,
+                fill=self.scheme.on_surface_variant, width=self.left_margin - 12,
             )
-    
-    def draw_grid(self):
-        """繪製表格網格"""
-        # 計算表格總寬度和高度
-        total_width = self.left_margin + (len(self.days) - 1) * self.cell_width
-        total_height = self.top_margin + len(self.time_slots) * self.cell_height
-        
-        # 設置畫布捲動區域
-        self.canvas.config(scrollregion=(0, 0, total_width, total_height))
-        
-        # 繪製垂直網格線
-        for i in range(len(self.days)):
-            x = self.left_margin + i * self.cell_width
-            self.canvas.create_line(
-                x, self.top_margin, x, total_height,
-                fill="black", width=1
-            )
-        
-        # 繪製水平網格線
-        for i in range(len(self.time_slots) + 1):
-            y = self.top_margin + i * self.cell_height
-            self.canvas.create_line(
-                0, y, total_width, y,
-                fill="black", width=1
-            )
-            
-    def draw_time_slots(self, time_slots):
-        """繪製時間槽"""
-        self.time_slots = time_slots
-        
-        # 繪製網格
-        self.draw_grid()
-        
-        # 調整字體大小
-        time_font_size = max(8, min(10, int(self.left_margin / 10)))
-        
-        # 繪製時間欄
-        for i, time_slot in enumerate(time_slots):
-            y = self.top_margin + i * self.cell_height + self.cell_height / 2
-            self.canvas.create_text(
-                self.left_margin / 2, y,
-                text=time_slot, font=("Iansui", time_font_size),
-                width=self.left_margin - 10  # 設置文字換行寬度
-            )
-            
-    def set_cell_content(self, row, col, content):
-        """設置儲存格內容"""
-        # 計算儲存格位置
-        x1 = self.left_margin + (col - 1) * self.cell_width
-        y1 = self.top_margin + row * self.cell_height
-        x2 = x1 + self.cell_width
-        y2 = y1 + self.cell_height
-        
-        # 創建儲存格 ID
-        cell_id = f"cell_{row}_{col}"
-        
-        # 檢查是否已經有內容
-        if cell_id in self.cells:
-            # 刪除舊內容
-            self.canvas.delete(self.cells[cell_id])
-            
-        # 調整字體大小
-        font_size = self.calculate_font_size(content, self.cell_width - 10, self.cell_height - 10)
-            
-        # 創建新內容
-        text_id = self.canvas.create_text(
-            (x1 + x2) / 2, (y1 + y2) / 2,
-            text=content, font=("Iansui", font_size),
-            width=self.cell_width - 10,  # 設置文字換行寬度
-            tags=cell_id
-        )
-        
-        self.cells[cell_id] = text_id
-    
-    def calculate_font_size(self, text, max_width, max_height):
-        """根據文字長度和儲存格大小計算適合的字體大小"""
-        # 基礎字體大小
-        base_size = 10
-        
-        # 如果文字較長，減小字體
-        text_length = len(text)
-        lines = text.count('\n') + 1
-        
-        if text_length > 30 or lines > 2:
-            return max(8, base_size - 2)
-        elif text_length > 15 or lines > 1:
-            return max(9, base_size - 1)
-        else:
-            return base_size
-        
-    def merge_cells(self, start_row, end_row, col, content):
-        """合併儲存格"""
-        # 計算合併儲存格位置
-        x1 = self.left_margin + (col - 1) * self.cell_width
-        y1 = self.top_margin + start_row * self.cell_height
-        x2 = x1 + self.cell_width
-        y2 = self.top_margin + (end_row + 1) * self.cell_height
-        
-        # 創建合併儲存格 ID
-        merge_id = f"merge_{start_row}_{end_row}_{col}"
-        
-        # 清除要合併的儲存格
-        for row in range(start_row, end_row + 1):
-            cell_id = f"cell_{row}_{col}"
-            if cell_id in self.cells:
-                self.canvas.delete(self.cells[cell_id])
-                del self.cells[cell_id]
-                
-        # 創建合併儲存格外框
-        rect_id = self.canvas.create_rectangle(
-            x1, y1, x2, y2,
-            fill="white", outline="black",
-            tags=merge_id
-        )
-        
-        # 調整字體大小
-        cell_height = y2 - y1
-        font_size = self.calculate_font_size(content, self.cell_width - 10, cell_height - 10)
-        
-        # 創建文字
-        text_id = self.canvas.create_text(
-            (x1 + x2) / 2, (y1 + y2) / 2,
-            text=content, font=("Iansui", font_size),
-            width=self.cell_width - 10,  # 設置文字換行寬度
-            tags=merge_id
-        )
-        
-        self.merged_cells[merge_id] = (rect_id, text_id)
-        
-    def display_single_timetable(self, result):
-        """顯示單一課表"""
-        self.clear_canvas()
-        
-        # 檢查每一天有沒有課程
-        days = ['Time']
-        if any(slot.get('monday') for slot in result):
-            days.append('Monday')
-        if any(slot.get('tuesday') for slot in result):
-            days.append('Tuesday')
-        if any(slot.get('wednesday') for slot in result):
-            days.append('Wednesday')
-        if any(slot.get('thursday') for slot in result):
-            days.append('Thursday')
-        if any(slot.get('friday') for slot in result):
-            days.append('Friday')
-            
-        self.set_days(days)
-        
-        # 只保留有課程的時間槽
-        times_with_courses = []
-        for time_slot in result:
-            if any(time_slot.get(day.lower(), '') for day in days[1:]):
-                times_with_courses.append(time_slot.get('time', ''))
-        
-        # 去除重複並排序
-        unique_times = sorted(set(times_with_courses), key=lambda x: self.time_to_minutes(x))
-        self.draw_time_slots(unique_times)
-        
-        # 繪製課程
-        for time_slot in result:
-            if any(time_slot.get(day.lower(), '') for day in days[1:]):
-                time = time_slot.get('time', '')
-                row = unique_times.index(time)
-                
-                # 對每一天檢查是否有課
-                for i, day in enumerate(days[1:], 1):
-                    content = time_slot.get(day.lower(), '')
-                    if content:
-                        self.set_cell_content(row, i, content)
-    
-    def display_mix_timetable(self, result):
-        """顯示混合課表（行事曆用）"""
-        self.clear_canvas()
-        
-        # 檢查每一天有沒有課程
-        days = ['Time']
-        if any(slot.get('monday') for slot in result):
-            days.append('Monday')
-        if any(slot.get('tuesday') for slot in result):
-            days.append('Tuesday')
-        if any(slot.get('wednesday') for slot in result):
-            days.append('Wednesday')
-        if any(slot.get('thursday') for slot in result):
-            days.append('Thursday')
-        if any(slot.get('friday') for slot in result):
-            days.append('Friday')
-            
-        self.set_days(days)
-        
-        # 只保留有課程的時間槽
-        times_with_courses = []
-        for time_slot in result:
-            if any(time_slot.get(day.lower(), '') for day in days[1:]):
-                times_with_courses.append(time_slot.get('time', ''))
-        
-        # 去除重複並排序
-        unique_times = sorted(set(times_with_courses), key=lambda x: self.time_to_minutes(x))
-        self.draw_time_slots(unique_times)
-        
-        # 為每一天找出連續的相同課程
-        for day_index, day in enumerate(days[1:], 1):
-            day_lower = day.lower()
-            
-            # 建立每個時間槽與課程的對應
-            time_course_map = {}
-            for time_slot in result:
-                course = time_slot.get(day_lower, '')
-                if course:
-                    time = time_slot.get('time', '')
-                    time_index = unique_times.index(time)
-                    time_course_map[time_index] = course
-            
-            # 尋找連續的課程
-            start_row = None
-            current_course = None
-            
-            for i in range(len(unique_times)):
-                if i in time_course_map:
-                    course = time_course_map[i]
-                    
-                    if course == current_course:
-                        # 課程相同，繼續累積
-                        continue
-                    else:
-                        # 新課程，結束前一個課程的合併
-                        if start_row is not None and i-1 > start_row:
-                            # 合併前一個課程的儲存格
-                            merged_content = f"{current_course}"
-                            self.merge_cells(start_row, i-1, day_index, merged_content)
-                        elif start_row is not None:
-                            # 單一時間槽，無需合併
-                            self.set_cell_content(start_row, day_index, 
-                                                 f"{current_course}")
-                        
-                        # 開始新課程
-                        start_row = i
-                        current_course = course
-                
-                elif start_row is not None:
-                    # 遇到空白課程，結束合併
-                    if i-1 > start_row:
-                        # 合併前一個課程的儲存格
-                        merged_content = f"{current_course}"
-                        self.merge_cells(start_row, i-1, day_index, merged_content)
-                    else:
-                        # 單一時間槽，無需合併
-                        self.set_cell_content(start_row, day_index, 
-                                             f"{current_course}")
-                    
-                    start_row = None
-                    current_course = None
-            
-            # 處理最後一個課程
-            if start_row is not None:
-                end_row = len(unique_times) - 1
-                if end_row > start_row:
-                    # 合併最後的課程儲存格
-                    merged_content = f"{current_course}"
-                    self.merge_cells(start_row, end_row, day_index, merged_content)
-                else:
-                    # 單一時間槽，無需合併
-                    self.set_cell_content(start_row, day_index, 
-                                         f"{current_course}")
-    
-    def display_error(self, message):
-        """顯示錯誤訊息"""
-        self.clear_canvas()
-        
-        # 設置畫布大小
-        self.canvas.config(scrollregion=(0, 0, self.width, self.height))
-        
-        # 繪製錯誤訊息
+
+    def _draw_course_chip(self, start_row, end_row, col, content):
+        """畫一張課程卡片；單一時段與合併時段共用同一段邏輯。"""
+        x1 = self.left_margin + (col - 1) * self.cell_width + CHIP_PADDING
+        y1 = self.top_margin + start_row * self.cell_height + CHIP_PADDING
+        x2 = x1 + self.cell_width - CHIP_PADDING * 2
+        y2 = self.top_margin + (end_row + 1) * self.cell_height - CHIP_PADDING
+
+        background, foreground = self._chip_colors(content)
+        md3.rounded_rect(self.canvas, x1, y1, x2, y2, CHIP_RADIUS,
+                         fill=background, outline="")
         self.canvas.create_text(
-            self.width / 2, self.height / 2,
-            text=message, font=("Iansui", 14, "bold"),
-            fill="red"
+            (x1 + x2) / 2, (y1 + y2) / 2, text=content,
+            font=self._chip_font(content), fill=foreground,
+            width=x2 - x1 - 8,
         )
-    
+
+    @staticmethod
+    def _chip_font(content):
+        """文字多就縮字級，免得卡片塞不下。"""
+        family = md3.type_scale("body_medium")[0]
+        lines = content.count("\n") + 1
+        if len(content) > 30 or lines > 2:
+            return (family, 9)
+        if len(content) > 15 or lines > 1:
+            return (family, 10)
+        return (family, 11)
+
+    # ── 資料整理 ───────────────────────────────────────────
+    @staticmethod
+    def _collect_days_and_times(result):
+        """找出「這禮拜哪幾天有課、有哪些時段」，空的日子直接不畫。"""
+        days = ["Time"]
+        for day in WEEKDAYS:
+            if any(slot.get(day.lower()) for slot in result):
+                days.append(day)
+
+        times = {slot.get("time", "") for slot in result
+                 if any(slot.get(day.lower(), "") for day in days[1:])}
+        return days, sorted(times, key=TimetableCanvas.time_to_minutes)
+
+    def _prepare(self, result):
+        self.clear_canvas()
+        self.days, self.time_slots = self._collect_days_and_times(result)
+        self._draw_frame()
+        self._draw_time_column()
+
+    # ── 兩種課表 ───────────────────────────────────────────
+    def display_single_timetable(self, result):
+        """一般課表：每個時段各自一張卡片。"""
+        self._last_render = ("single", result)
+        self._prepare(result)
+
+        for time_slot in result:
+            time_text = time_slot.get("time", "")
+            if time_text not in self.time_slots:
+                continue
+            row = self.time_slots.index(time_text)
+            for col, day in enumerate(self.days[1:], 1):
+                content = time_slot.get(day.lower(), "")
+                if content:
+                    self._draw_course_chip(row, row, col, content)
+
+    def display_mix_timetable(self, result):
+        """行事曆用課表：連續同一門課的時段合併成一張長卡片。"""
+        self._last_render = ("mix", result)
+        self._prepare(result)
+
+        for col, day in enumerate(self.days[1:], 1):
+            for start_row, end_row, course in self._runs_for_day(result, day.lower()):
+                self._draw_course_chip(start_row, end_row, col, course)
+
+    def _runs_for_day(self, result, day_key):
+        """把某一天的課切成 (起始列, 結束列, 課名) 這種連續區段。"""
+        by_row = {}
+        for time_slot in result:
+            course = time_slot.get(day_key, "")
+            time_text = time_slot.get("time", "")
+            if course and time_text in self.time_slots:
+                by_row[self.time_slots.index(time_text)] = course
+
+        runs = []
+        start_row = None
+        current = None
+        for row in range(len(self.time_slots)):
+            course = by_row.get(row)
+            if course == current:
+                continue
+            if current is not None:
+                runs.append((start_row, row - 1, current))
+            start_row, current = (row, course) if course else (None, None)
+        if current is not None:
+            runs.append((start_row, len(self.time_slots) - 1, current))
+        return runs
+
+    def display_error(self, message):
+        self._last_render = ("error", message)
+        self.clear_canvas()
+        self.canvas.config(scrollregion=(0, 0, self.width, self.height))
+        self.canvas.create_text(
+            self.width / 2, self.height / 2, text=message,
+            font=md3.type_scale("title_medium"), fill=self.scheme.error,
+        )
+
     @staticmethod
     def time_to_minutes(time_str):
-        """將時間字符串轉換為分鐘數，用於排序"""
-        if not time_str or '-' not in time_str:
+        """把 '08:10-09:00' 轉成分鐘數，純粹給排序用。"""
+        if not time_str or "-" not in time_str:
             return 0
-        start_time = time_str.split('-')[0].strip()
-        if not start_time:
-            return 0
+        start = time_str.split("-")[0].strip()
         try:
-            hours, minutes = map(int, start_time.split(':'))
-            return hours * 60 + minutes
-        except:
+            hours, minutes = map(int, start.split(":"))
+        except ValueError:
             return 0
+        return hours * 60 + minutes
 
-# 主視窗設置
-window = Tk()
-window.title("NTUB Timetable ICS Generator by Nekolia") 
-window.geometry('1000x700')
 
-# 載入字型
-try:
-    font_name = "Iansui"
-    window.option_add("*Font", font_name)
-    window.tk.call("font", "create", font_name, "-family", font_name)
-except TclError:
-    print("注意: 'Iansui' 字型未安裝，將使用預設字型。")
+# ═══════════════════════════ 主視窗 ═══════════════════════════
 
-# 創建框架來容納控制項
-control_frame = Frame(window)
-control_frame.pack(fill='x', padx=20, pady=10)
+settings = theme.load_settings()
+seed, seed_source = theme.resolve_seed(settings)
+scheme = theme.build_scheme(seed, settings.get("dark", False))
 
-# 學號輸入區 - 放在左側
-id_frame = Frame(control_frame)
-id_frame.pack(side='left', padx=10)
+window = tk.Tk()
+window.title("NTUB Timetable ICS Generator by Nekolia")
+window.geometry("1000x760")
+md3.apply_theme(window, scheme)
 
-student_id_label = Label(id_frame, text="請輸入學號:", font=("Iansui", 12))
-student_id_label.pack(side='left')
-student_id_entry = Entry(id_frame, font=("Iansui", 12), width=12)
-student_id_entry.pack(side='left', padx=5)
+# ── Top app bar ──
+app_bar = ttk.Frame(window, style="M3Bar.TFrame")
+app_bar.pack(fill="x")
 
-student_id_error_label=Label(id_frame, text="", font=("Iansui", 10), fg="red",state='disabled')
-student_id_error_label.pack(side='left', padx=25)
+title_label = ttk.Label(app_bar, text="NTUB 課表 ICS 產生器", style="M3Title.TLabel")
+title_label.pack(side="left", padx=20, pady=14)
 
-# 驗證學號只能輸入數字
+theme_button = ttk.Button(app_bar, text="◐", width=3, style="M3Icon.TButton")
+theme_button.pack(side="right", padx=(4, 16), pady=10)
+
+dark_button = ttk.Button(app_bar, text="☀" if scheme.is_dark else "☾",
+                         width=3, style="M3Icon.TButton")
+dark_button.pack(side="right", padx=4, pady=10)
+
+# ── 控制卡片 ──
+card = ttk.Frame(window, style="M3Card.TFrame", padding=16)
+card.pack(fill="x", padx=16, pady=16)
+
+main_row = ttk.Frame(card, style="M3Card.TFrame")
+main_row.pack(fill="x")
+
+# 學號
+id_frame = ttk.Frame(main_row, style="M3Card.TFrame")
+id_frame.pack(side="left")
+ttk.Label(id_frame, text="學號", style="M3Card.TLabel").pack(side="left", padx=(0, 8))
+student_id_entry = ttk.Entry(id_frame, width=12, style="M3.TEntry",
+                             font=md3.type_scale("body_large"))
+student_id_entry.pack(side="left")
 student_id_entry.config(
     validate="key",
-    validatecommand=(window.register(lambda P: P.isdigit() or P == ""), "%P",),
+    validatecommand=(window.register(lambda value: value.isdigit() or value == ""), "%P"),
 )
+student_id_error_label = ttk.Label(id_frame, text="", style="M3Error.TLabel")
+student_id_error_label.pack(side="left", padx=12)
 
-# 課表類型選擇 - 放在中間
-type_frame = Frame(control_frame)
-type_frame.pack(side='left', padx=20)
+# 課表類型（segmented button）
+type_frame = ttk.Frame(main_row, style="M3Card.TFrame")
+type_frame.pack(side="left", padx=24)
+class_type = tk.StringVar(value="單一課表")
 
-class_type_label = Label(type_frame, text="課表類型:", font=("Iansui", 12))
-class_type_label.pack(side='left')
-class_type = StringVar(value="單一課表")  # 預設值
 
 def on_class_type_change():
-    """Radio 切換時控制日期選擇區的顯示/隱藏"""
-    if class_type.get() == '混合課表':
-        date_frame.pack(side='right', padx=10, before=button_frame)
+    """只有行事曆用課表需要設定重複到哪天。"""
+    if class_type.get() == "混合課表":
+        date_row.pack(fill="x", pady=(12, 0))
     else:
-        date_frame.pack_forget()
+        date_row.pack_forget()
 
-single_class_radio = Radiobutton(type_frame, text="課表", variable=class_type, value="單一課表",
-                                 font=("Iansui", 12), command=on_class_type_change)
-single_class_radio.pack(side='left', padx=5)
 
-mix_class_radio = Radiobutton(type_frame, text="行事曆用課表", variable=class_type, value="混合課表",
-                               font=("Iansui", 12), command=on_class_type_change)
-mix_class_radio.pack(side='left', padx=5)
+for label, value in (("課表", "單一課表"), ("行事曆用課表", "混合課表")):
+    ttk.Radiobutton(type_frame, text=label, variable=class_type, value=value,
+                    style="M3Segment.TRadiobutton",
+                    command=on_class_type_change).pack(side="left")
 
-# ── 結束日期設定（Material Design） ──
-date_frame = Frame(control_frame, bg=MD_SURFACE, bd=0, highlightthickness=0)
-# 預設隱藏，選「行事曆用課表」才顯示
+# 按鈕
+button_frame = ttk.Frame(main_row, style="M3Card.TFrame")
+button_frame.pack(side="right")
+generate_button = ttk.Button(button_frame, text="產生課表", style="M3Filled.TButton")
+generate_button.pack(side="left", padx=4)
+ics_button = ttk.Button(button_frame, text="匯出 ICS", style="M3Tonal.TButton",
+                        state="disabled")
+ics_button.pack(side="left", padx=4)
 
-# 預設日期 = 今天 + 18 週
-default_end_date = datetime.date.today() + datetime.timedelta(weeks=18)
+# ── 重複區間（預設隱藏） ──
+date_row = ttk.Frame(card, style="M3Card.TFrame")
 
-repeat_label = Label(date_frame, text="重複至:", font=("Iansui", 12),
-                     bg=MD_SURFACE, fg=MD_ON_SURFACE)
-repeat_label.pack(side='left')
+ttk.Label(date_row, text="重複至", style="M3Card.TLabel").pack(side="left", padx=(0, 8))
 
+default_end_date = datetime.date.today() + datetime.timedelta(weeks=DEFAULT_WEEKS)
 end_date_entry = DateEntry(
-    date_frame,
-    width=12,
-    year=default_end_date.year,
-    month=default_end_date.month,
-    day=default_end_date.day,
-    font=("Iansui", 11),
-    background=MD_PRIMARY,
-    foreground=MD_ON_PRIMARY,
-    headersbackground=MD_PRIMARY,
-    headersforeground=MD_ON_PRIMARY,
-    selectbackground=MD_PRIMARY_D,
-    selectforeground=MD_ON_PRIMARY,
-    normalbackground=MD_SURFACE,
-    normalforeground=MD_ON_SURFACE,
-    weekendbackground=MD_SURFACE,
-    weekendforeground=MD_ON_SURFACE,
-    bordercolor=MD_PRIMARY,
-    date_pattern='yyyy/mm/dd',
-    locale='zh_TW',
+    date_row, width=12,
+    year=default_end_date.year, month=default_end_date.month, day=default_end_date.day,
+    date_pattern="yyyy/mm/dd", locale="zh_TW",
 )
-end_date_entry.pack(side='left', padx=5)
+end_date_entry.pack(side="left")
+md3.style_date_entry(end_date_entry, scheme)
 
-# 無限重複 Checkbox
-infinite_var = BooleanVar(value=False)
+infinite_var = tk.BooleanVar(value=False)
+
 
 def toggle_date_entry():
-    if infinite_var.get():
-        end_date_entry.config(state='disabled')
+    end_date_entry.config(state="disabled" if infinite_var.get() else "normal")
+
+
+ttk.Checkbutton(date_row, text="無限重複", variable=infinite_var,
+                style="M3.TCheckbutton",
+                command=toggle_date_entry).pack(side="left", padx=12)
+
+# ── 課表畫布 ──
+timetable_canvas = TimetableCanvas(window, scheme, width=960, height=520)
+
+# ── Snackbar 狀態列 ──
+snackbar = tk.Label(window, text="就緒", anchor="w", padx=16, pady=10,
+                    bd=0, highlightthickness=0)
+snackbar.pack(fill="x", side="bottom")
+
+
+def show_status(message, kind="info"):
+    """底部訊息條。M3 的 snackbar 用反色 surface，錯誤則用 error container。"""
+    if kind == "error":
+        background, foreground = scheme.error_container, scheme.on_error_container
+    elif kind == "success":
+        background, foreground = scheme.inverse_surface, scheme.inverse_on_surface
     else:
-        end_date_entry.config(state='normal')
+        background, foreground = scheme.surface_container, scheme.on_surface_variant
+    snackbar.config(text=message, bg=background, fg=foreground,
+                    font=md3.type_scale("body_medium"))
 
-infinite_check = Checkbutton(
-    date_frame, text="無限重複", variable=infinite_var,
-    font=("Iansui", 10), bg=MD_SURFACE, fg=MD_ON_SURFACE,
-    activebackground=MD_SURFACE, selectcolor=MD_SURFACE,
-    command=toggle_date_entry
-)
-infinite_check.pack(side='left', padx=5)
 
-# ── 按鈕區（Material Design） ──
-button_frame = Frame(control_frame, bg=MD_SURFACE)
-button_frame.pack(side='right', padx=10)
+# ═══════════════════════════ 主題切換 ═══════════════════════════
 
-def md_button_enter(e):
-    e.widget.config(bg=MD_PRIMARY_D)
+def refresh_theme():
+    """重新產生 scheme 並套到所有 widget 上。"""
+    global scheme
+    scheme = theme.build_scheme(settings.get("seed", theme.DEFAULT_SEED),
+                                settings.get("dark", False))
+    md3.apply_theme(window, scheme)
+    md3.style_date_entry(end_date_entry, scheme)
+    timetable_canvas.retheme(scheme)
+    dark_button.config(text="☀" if scheme.is_dark else "☾")
+    show_status(snackbar.cget("text"))
 
-def md_button_leave(e):
-    if e.widget.cget('state') != 'disabled':
-        e.widget.config(bg=MD_PRIMARY)
 
-generate_button = Button(
-    button_frame, text="產生課表", font=("Iansui", 12),
-    bg=MD_PRIMARY, fg=MD_ON_PRIMARY, activebackground=MD_PRIMARY_D,
-    activeforeground=MD_ON_PRIMARY, relief='flat', padx=14, pady=4,
-    cursor='hand2', bd=0
-)
-generate_button.pack(pady=2)
-generate_button.bind('<Enter>', md_button_enter)
-generate_button.bind('<Leave>', md_button_leave)
+def toggle_dark():
+    settings["dark"] = not settings.get("dark", False)
+    theme.save_settings(settings)
+    refresh_theme()
 
-ics_button = Button(
-    button_frame, text="匯出 ICS", font=("Iansui", 12),
-    bg=MD_DISABLED_BG, fg=MD_DISABLED_FG, relief='flat',
-    padx=14, pady=4, bd=0, state='disabled'
-)
-ics_button.pack(pady=2)
-ics_button.bind('<Enter>', md_button_enter)
-ics_button.bind('<Leave>', md_button_leave)
 
-ics_error_label = Label(button_frame, text="", font=("Iansui", 10), fg="red", state='disabled')
-ics_error_label.pack()
+def set_seed(new_seed, source):
+    settings["seed"] = new_seed
+    settings["seed_source"] = source
+    theme.save_settings(settings)
+    refresh_theme()
 
-# 創建課表畫布 - 指定適合的大小
-timetable_canvas = TimetableCanvas(window, width=960, height=560)
 
-student_id_check=""
+def open_theme_dialog():
+    """選種子色的小視窗：內建色票 / 重抓桌布 / 自訂。"""
+    dialog = tk.Toplevel(window)
+    dialog.title("主題顏色")
+    dialog.configure(bg=scheme.surface)
+    dialog.resizable(False, False)
+    dialog.transient(window)
 
-# 產生課表函數
+    body = ttk.Frame(dialog, style="M3Card.TFrame", padding=16)
+    body.pack(fill="both", expand=True)
+
+    ttk.Label(body, text="選一個種子色", style="M3Card.TLabel").pack(anchor="w")
+
+    swatches = ttk.Frame(body, style="M3Card.TFrame")
+    swatches.pack(pady=12)
+    for name, value in theme.BUILTIN_SEEDS:
+        swatch = tk.Button(
+            swatches, text=name, width=3, bd=0, relief="flat", cursor="hand2",
+            bg=value, fg=theme.build_scheme(value, False).on_primary,
+            activebackground=value, highlightthickness=0,
+            command=lambda v=value: (set_seed(v, "custom"), dialog.destroy()),
+        )
+        swatch.pack(side="left", padx=4, ipady=6)
+
+    def pick_from_wallpaper():
+        wallpaper_seed, source = theme.seed_from_wallpaper(settings)
+        if wallpaper_seed:
+            settings["seed"] = wallpaper_seed
+            set_seed(wallpaper_seed, "wallpaper")
+            show_status(f"已套用 {source}", "success")
+        else:
+            show_status(f"{source}，先維持原本的顏色", "error")
+        dialog.destroy()
+
+    def pick_custom():
+        chosen = colorchooser.askcolor(color=settings.get("seed"), parent=dialog)[1]
+        if chosen:
+            set_seed(chosen, "custom")
+        dialog.destroy()
+
+    ttk.Button(body, text="從桌布擷取", style="M3Tonal.TButton",
+               command=pick_from_wallpaper).pack(fill="x", pady=(0, 6))
+    ttk.Button(body, text="自訂顏色…", style="M3Tonal.TButton",
+               command=pick_custom).pack(fill="x")
+    ttk.Label(body, text=f"目前: {settings.get('seed')}",
+              style="M3Hint.TLabel").pack(anchor="w", pady=(12, 0))
+
+
+# ═══════════════════════════ 功能 ═══════════════════════════
+
+student_id_check = ""
+
+
+def _downloads_dir():
+    """找使用者的下載資料夾；找不到就退回家目錄。"""
+    home = os.path.expanduser("~")
+    for name in ("Downloads", "downloads", "下載"):
+        candidate = os.path.join(home, name)
+        if os.path.isdir(candidate):
+            return candidate
+    return home
+
+
 def generate_timetable():
-    
-    #取得學號
+    global student_id_check
+
     student_id = student_id_entry.get()
     selected_type = class_type.get()
+    student_id_check = student_id
+    student_id_error_label.config(text="")
 
-    #驗證學號
-    global student_id_check
-    student_id_check=student_id
+    if not student_id:
+        student_id_error_label.config(text="請輸入學號")
+        ics_button.config(state="disabled")
+        return
+    if not student_id.isdigit():
+        student_id_error_label.config(text="不是你咋做到的")
+        ics_button.config(state="disabled")
+        return
 
-    #清空錯誤訊息
-    student_id_error_label.config(text='',state='disabled')
-    ics_error_label.config(text='',state='disabled')
-
+    ics_button.config(state="disabled")
+    show_status("查詢中…")
     try:
-        if not student_id:
-            error_type = '學號'
-            raise Exception('請輸入學號')
-        
-        elif not student_id.isdigit():
-            error_type='學號'
-            raise Exception('不是你咋做到的')
-            
         result = get_single_class_table(student_id)
-        if result == '無此人':
-            error_type='沒人'
-            raise Exception('此學號不存在或沒選課')
-            
-        if result:
-            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
-            if selected_type == '單一課表':
-                timetable_canvas.display_single_timetable(result)
-            else:  # 混合課表
-                timetable_canvas.display_mix_timetable(result)
-                ics_button.config(state='normal', bg=MD_PRIMARY, fg=MD_ON_PRIMARY)
+        if result == "無此人":
+            raise Exception("此學號不存在或沒選課")
+        if not result:
+            raise Exception("查不到課表資料")
 
-    except Exception as e:
-        if 'error_type' in locals() and error_type == '學號':
-            student_id_error_label.config(text=str(e),state='normal')
-            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
-
+        if selected_type == "單一課表":
+            timetable_canvas.display_single_timetable(result)
+            show_status("課表已產生，切到「行事曆用課表」就能匯出 ICS", "success")
         else:
-            timetable_canvas.display_error(f'錯誤: {str(e)}')
-            ics_button.config(state='disabled', bg=MD_DISABLED_BG, fg=MD_DISABLED_FG)
+            timetable_canvas.display_mix_timetable(result)
+            ics_button.config(state="normal")
+            show_status("課表已產生，可以匯出 ICS 了", "success")
+
+    except Exception as error:
+        timetable_canvas.display_error(f"錯誤: {error}")
+        show_status(str(error), "error")
+
 
 def generate_ics():
     student_id = student_id_entry.get()
 
-    ics_error_label.config(text='',state='disabled')
-    
-    global student_id_check
-    
     try:
         if not student_id:
-            raise Exception('偷刪學號是會被發現的喔')
-        
-        elif not student_id.isdigit():
-            raise Exception('通報阿茲卡班，有魔法師逃出來了')
-        
-        elif student_id != student_id_check:
-            raise Exception('你以為我不知道你換學號了嗎')
+            raise Exception("偷刪學號是會被發現的喔")
+        if not student_id.isdigit():
+            raise Exception("通報阿茲卡班，有魔法師逃出來了")
+        if student_id != student_id_check:
+            raise Exception("你以為我不知道你換學號了嗎")
 
         result = get_mix_class_table(student_id)
-        if result == '無此人':
-            raise Exception('告訴下Nekolia你怎麼找到漏洞的')
-        
-        # --- 2. 以下是主要修改部分 ---
+        if result == "無此人":
+            raise Exception("告訴下Nekolia你怎麼找到漏洞的")
 
-        # 取得使用者「下載」資料夾的路徑
-        downloads_path = os.path.join(os.path.expanduser('~'), 'downloads')
-
-        # 彈出「另存新檔」視窗
         file_path = filedialog.asksaveasfilename(
-            initialdir=downloads_path,  # 預設開啟「下載」資料夾
-            initialfile=f"{student_id}_timetable.ics", # 預設檔名
+            initialdir=_downloads_dir(),
+            initialfile=f"{student_id}_timetable.ics",
             defaultextension=".ics",
-            filetypes=[
-                ("iCalendar files", "*.ics"),
-                ("All files", "*.*")
-            ]
+            filetypes=[("iCalendar files", "*.ics"), ("All files", "*.*")],
         )
-
-        # 如果使用者點擊取消，file_path 會是空字串，則不執行後續動作
         if not file_path:
-            return
+            return  # 使用者按取消
 
-        # --- 修改結束，後續邏輯不變 ---
-        
         today = datetime.date.today()
         weekday = today.weekday()
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("BEGIN:VCALENDAR\n")
-            f.write("VERSION:2.0\n")
-            f.write("PRODID:-//NTUB Timetable Generator//EN\n")
-            f.write("CALSCALE:GREGORIAN\n")
-            f.write("METHOD:PUBLISH\n")
-            for i in range(len(result["class"])):
-                class_name = result["class"][i]
-                class_day = result["day"][i] - 1
-                class_place = result["place"][i]
-                class_start = result["start"][i]
-                class_end = result["end"][i]
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write("BEGIN:VCALENDAR\n")
+            handle.write("VERSION:2.0\n")
+            handle.write("PRODID:-//NTUB Timetable Generator//EN\n")
+            handle.write("CALSCALE:GREGORIAN\n")
+            handle.write("METHOD:PUBLISH\n")
+            for index in range(len(result["class"])):
+                class_name = result["class"][index]
+                class_day = result["day"][index] - 1
+                class_place = result["place"][index]
+                class_start = result["start"][index]
+                class_end = result["end"][index]
 
                 days_ahead = (class_day - weekday + 7) % 7
-                go_to_class_date = today + datetime.timedelta(days=days_ahead)
+                class_date = (today + datetime.timedelta(days=days_ahead)).strftime("%Y%m%d")
 
-                uid = f"{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00Z-{class_name}@ntub.tw"
-                f.write("BEGIN:VEVENT\n")
-                f.write(f"SUMMARY:{class_name}\n")
-                f.write(f"DTSTART;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_start.replace(':','')}00\n")
-                f.write(f"DTEND;TZID=Asia/Taipei:{go_to_class_date.strftime('%Y%m%d')}T{class_end.replace(':','')}00\n")
-                f.write(f"LOCATION:{class_place}\n")
-                f.write(f"UID:{uid}\n")
-                f.write(f"DTSTAMP:{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}\n")
+                handle.write("BEGIN:VEVENT\n")
+                handle.write(f"SUMMARY:{class_name}\n")
+                handle.write(f"DTSTART;TZID=Asia/Taipei:{class_date}T{class_start.replace(':', '')}00\n")
+                handle.write(f"DTEND;TZID=Asia/Taipei:{class_date}T{class_end.replace(':', '')}00\n")
+                handle.write(f"LOCATION:{class_place}\n")
+                handle.write(f"UID:{class_date}T{class_start.replace(':', '')}00Z-{class_name}@ntub.tw\n")
+                handle.write(f"DTSTAMP:{stamp}\n")
                 if infinite_var.get():
-                    f.write("RRULE:FREQ=WEEKLY\n")
+                    handle.write("RRULE:FREQ=WEEKLY\n")
                 else:
-                    until_date = end_date_entry.get_date()
-                    f.write(f"RRULE:FREQ=WEEKLY;UNTIL={until_date.strftime('%Y%m%d')}T235959Z\n")
-                f.write("END:VEVENT\n")
+                    until = end_date_entry.get_date().strftime("%Y%m%d")
+                    handle.write(f"RRULE:FREQ=WEEKLY;UNTIL={until}T235959Z\n")
+                handle.write("END:VEVENT\n")
+            handle.write("END:VCALENDAR\n")
 
-            f.write("END:VCALENDAR\n")
-        
-        # 提示使用者檔案已儲存
-        ics_error_label.config(text=f"成功匯出！", fg="green", state='normal')
+        show_status(f"成功匯出到 {file_path}", "success")
 
-    except Exception as e:
-        ics_error_label.config(text=str(e),state='normal', fg="red")
+    except Exception as error:
+        show_status(str(error), "error")
 
-# 設定按鈕命令
+
 generate_button.config(command=generate_timetable)
 ics_button.config(command=generate_ics)
-# 狀態欄
-status_frame = Frame(window, height=20)
-status_frame.pack(fill='x', side='bottom')
-status_label = Label(status_frame, text="就緒", bd=1, relief=SUNKEN, anchor=W)
-status_label.pack(fill='x')
+dark_button.config(command=toggle_dark)
+theme_button.config(command=open_theme_dialog)
 
+show_status(f"就緒（配色來源：{seed_source}）")
 window.mainloop()
